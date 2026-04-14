@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Smart Text Animation | Particle Canvas</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+        }
+
+        body {
+            overflow: hidden;
+            font-family: 'Segoe UI', 'Poppins', 'Inter', system-ui, -apple-system, sans-serif;
+            background: #0a0c12;
+        }
+
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            cursor: crosshair;
+        }
+
+        /* UI Overlay - minimal & elegant */
+        .controls {
+            position: fixed;
+            top: 24px;
+            left: 24px;
+            z-index: 100;
+            background: rgba(10, 12, 18, 0.65);
+            backdrop-filter: blur(10px);
+            border-radius: 48px;
+            padding: 8px 16px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            border: 1px solid rgba(0, 255, 255, 0.25);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+            transition: all 0.2s ease;
+        }
+
+        .controls label {
+            color: #ccf4ff;
+            font-weight: 500;
+            font-size: 0.85rem;
+            letter-spacing: 1px;
+            text-shadow: 0 0 5px cyan;
+        }
+
+        #textInput {
+            background: #0f1219;
+            border: 1px solid #2affdf;
+            color: #ffffff;
+            padding: 8px 16px;
+            border-radius: 40px;
+            font-size: 1rem;
+            font-weight: 500;
+            outline: none;
+            width: 180px;
+            transition: 0.2s;
+            font-family: monospace;
+            letter-spacing: 1px;
+        }
+
+        #textInput:focus {
+            border-color: #00ffff;
+            box-shadow: 0 0 12px cyan;
+            background: #000000aa;
+        }
+
+        button {
+            background: linear-gradient(135deg, #0affdf, #0088ff);
+            border: none;
+            padding: 8px 20px;
+            border-radius: 40px;
+            font-weight: bold;
+            color: #010101;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: 0.2s;
+            box-shadow: 0 2px 8px rgba(0,255,255,0.3);
+        }
+
+        button:hover {
+            transform: scale(1.02);
+            background: linear-gradient(135deg, #2affff, #2a9eff);
+            box-shadow: 0 0 12px cyan;
+        }
+
+        .info {
+            position: fixed;
+            bottom: 18px;
+            right: 24px;
+            z-index: 100;
+            color: rgba(180, 230, 255, 0.6);
+            font-size: 0.7rem;
+            background: rgba(0,0,0,0.4);
+            padding: 4px 12px;
+            border-radius: 20px;
+            backdrop-filter: blur(4px);
+            pointer-events: none;
+            font-family: monospace;
+        }
+
+        @media (max-width: 600px) {
+            .controls { padding: 6px 12px; gap: 8px; top: 16px; left: 16px; }
+            #textInput { width: 130px; font-size: 0.8rem; }
+            button { padding: 6px 14px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="controls">
+    <label>✨ TEXT</label>
+    <input type="text" id="textInput" value="NEON" maxlength="20">
+    <button id="updateBtn">ANIMATE</button>
+</div>
+<div class="info">
+    ◉ HOVER → particles explode | ✦ reassemble with flow
+</div>
+
+<canvas id="particleCanvas"></canvas>
+
+<script>
+    (function(){
+        // -------- DOM elements ----------
+        const canvas = document.getElementById('particleCanvas');
+        let ctx = canvas.getContext('2d');
+        
+        // -------- Global animation state ----------
+        let particles = [];
+        let animationId = null;
+        let lastTimestamp = 0;
+        
+        // mouse interaction
+        let mouseX = -1000, mouseY = -1000;
+        let hoverActive = false;      // mouse inside canvas
+        
+        // Writing animation phase
+        let writingActive = true;
+        let writingProgress = 0;        // 0 → 1
+        let revealMinX = 0;
+        let revealMaxX = 0;
+        let writingSpeed = 0.0022;       // per ms -> ~1.2 sec full reveal
+        
+        // current text & font sizing dynamic
+        let currentText = "NEON";
+        
+        // idle time reference (for floating offsets)
+        let globalTime = 0;
+        
+        // force / physics params
+        const MOUSE_RADIUS = 150;
+        const REPULSION_FORCE = 1.1;
+        const DAMPING = 0.94;
+        const SPRING_STRENGTH = 0.048;    // reassembly & idle float stiffness
+        const MAX_SPEED = 7.0;
+        
+        // -------- helper functions ----------
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            if(ctx) {
+                // re-generate particles after resize to maintain perfect centering
+                generateParticlesFromText(currentText);
+            }
+        }
+        
+        // adaptive font size: dynamic but elegant, ensures text fits within canvas width with margin
+        function getOptimalFontSize(text, maxWidthPercent = 0.75) {
+            const maxWidth = canvas.width * maxWidthPercent;
+            let fontSize = Math.min(canvas.height * 0.18, 130);
+            fontSize = Math.max(48, fontSize);
+            
+            // measure and shrink if needed
+            const tempCtx = canvas.getContext('2d');
+            let testSize = fontSize;
+            let textWidth = 0;
+            do {
+                tempCtx.font = `700 ${testSize}px "Inter", "Segoe UI", "Montserrat", monospace`;
+                textWidth = tempCtx.measureText(text).width;
+                if(textWidth > maxWidth && testSize > 42) {
+                    testSize -= 4;
+                } else {
+                    break;
+                }
+            } while(testSize > 42);
+            return Math.max(44, testSize);
+        }
+        
+        // generate particles by sampling pixel data from offscreen canvas (white text on black)
+        function generateParticlesFromText(text) {
+            if(!ctx) return;
+            if(!text || text.trim() === "") text = "✨";
+            currentText = text;
+            
+            // get adaptive font size
+            const fontSize = getOptimalFontSize(text, 0.8);
+            ctx.font = `700 ${fontSize}px "Inter", "Segoe UI", "Montserrat", monospace`;
+            const fontFamily = ctx.font;
+            
+            // measure text metrics
+            const textMetrics = ctx.measureText(text);
+            const textWidth = textMetrics.width;
+            // approximate height: using actual font metrics fallback
+            const approxHeight = fontSize * 1.15;
+            const ascent = fontSize * 0.75;  // rough baseline offset
+            
+            // center position on main canvas
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const startX = centerX - textWidth / 2;
+            const startY = centerY - approxHeight / 2 + (approxHeight * 0.2);
+            
+            // create offscreen canvas to extract pixel data precisely
+            const padding = 8;
+            const offWidth = Math.ceil(textWidth + padding * 2);
+            const offHeight = Math.ceil(approxHeight + padding * 2);
+            const offCanvas = document.createElement('canvas');
+            offCanvas.width = offWidth;
+            offCanvas.height = offHeight;
+            const offCtx = offCanvas.getContext('2d');
+            
+            // black background, white text
+            offCtx.fillStyle = "#000000";
+            offCtx.fillRect(0, 0, offWidth, offHeight);
+            offCtx.font = fontFamily;
+            offCtx.fillStyle = "#ffffff";
+            offCtx.textBaseline = "middle";
+            offCtx.textAlign = "center";
+            // draw text at center of offscreen
+            offCtx.fillText(text, offWidth/2, offHeight/2);
+            
+            // get pixel data
+            const imageData = offCtx.getImageData(0, 0, offWidth, offHeight);
+            const data = imageData.data;
+            
+            const newParticles = [];
+            const step = 4;      // spacing every 4px -> performance & aesthetics
+            
+            let minXGlobal = Infinity, maxXGlobal = -Infinity;
+            
+            // sampling loop
+            for(let y = 0; y < offHeight; y += step) {
+                for(let x = 0; x < offWidth; x += step) {
+                    const idx = (y * offWidth + x) * 4;
+                    if(idx >= data.length) continue;
+                    const r = data[idx];
+                    const g = data[idx+1];
+                    const b = data[idx+2];
+                    const alpha = data[idx+3];
+                    // brightness threshold (white text)
+                    if(alpha > 100 && (r + g + b) > 80) {
+                        // map to actual canvas coordinates
+                        const actualX = startX + (x - padding);
+                        const actualY = startY + (y - padding);
+                        
+                        // avoid out-of-bounds extreme (just safety)
+                        if(actualX > 0 && actualX < canvas.width && actualY > 0 && actualY < canvas.height) {
+                            // dynamic color: neon blue/cyan/purple gradient based on X position
+                            const hue = (actualX * 0.3 + actualY * 0.2) % 360;
+                            const sat = 85 + (Math.sin(actualX * 0.02) * 10);
+                            const light = 60 + Math.sin(actualY * 0.03) * 12;
+                            const color = `hsl(${hue + 190}, ${sat}%, ${light}%)`;
+                            
+                            const size = 2.2 + Math.random() * 1.6;
+                            const seedVal = (actualX * 73129 + actualY * 9511) % 10000;
+                            
+                            newParticles.push({
+                                origX: actualX,
+                                origY: actualY,
+                                x: actualX,
+                                y: actualY,
+                                vx: (Math.random() - 0.5) * 0.4,
+                                vy: (Math.random() - 0.5) * 0.4,
+                                size: size,
+                                color: color,
+                                seed: seedVal,
+                            });
+                            if(actualX < minXGlobal) minXGlobal = actualX;
+                            if(actualX > maxXGlobal) maxXGlobal = actualX;
+                        }
+                    }
+                }
+            }
+            
+            // if no particles fallback (text too small or empty) -> generate simple placeholder dots
+            if(newParticles.length === 0) {
+                console.warn("no particles generated, fallback pattern");
+                for(let i=0; i<180; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const rad = 70;
+                    const xOff = Math.cos(angle) * rad;
+                    const yOff = Math.sin(angle) * rad;
+                    newParticles.push({
+                        origX: centerX + xOff,
+                        origY: centerY + yOff,
+                        x: centerX + xOff,
+                        y: centerY + yOff,
+                        vx: 0, vy: 0,
+                        size: 3,
+                        color: `hsl(${Math.random() * 60 + 180}, 90%, 65%)`,
+                        seed: Math.random() * 10000,
+                    });
+                    if(centerX + xOff < minXGlobal) minXGlobal = centerX + xOff;
+                    if(centerX + xOff > maxXGlobal) maxXGlobal = centerX + xOff;
+                }
+            }
+            
+            // set reveal bounds for writing effect
+            if(newParticles.length) {
+                revealMinX = minXGlobal;
+                revealMaxX = maxXGlobal;
+            } else {
+                revealMinX = centerX - 50;
+                revealMaxX = centerX + 50;
+            }
+            
+            particles = newParticles;
+            
+            // reset writing animation
+            writingActive = true;
+            writingProgress = 0;
+            // reset hover flag so no forces during writing
+            hoverActive = false;
+            
+            // optional: small initial velocity kill
+        }
+        
+        // update particle physics (forces, idle floating, hover repulsion, reassembly)
+        function updateParticles(deltaTime, nowTime) {
+            if(!particles.length) return;
+            const dt = Math.min(deltaTime, 0.033); // cap for stability
+            if(dt <= 0) return;
+            
+            // globalTime for idle floating offsets
+            globalTime = nowTime;
+            
+            const isWriting = writingActive;
+            const mouseInside = hoverActive;
+            
+            // precompute idle offset for each particle based on time and seed (gentle floating)
+            // but compute target position = orig + idleShift (only if not hover forces)
+            // Actually, we compute target for spring when not hoverActive
+            for(let i = 0; i < particles.length; i++) {
+                const p = particles[i];
+                
+                // skip physics if writing animation is active (no movement, just reveal later)
+                if(isWriting) {
+                    // keep particles exactly at original positions during writing phase
+                    p.x = p.origX;
+                    p.y = p.origY;
+                    p.vx *= 0.95;
+                    p.vy *= 0.95;
+                    continue;
+                }
+                
+                // ---- POST WRITING: physics active ----
+                // 1. MOUSE REPULSION (if hover active)
+                if(mouseInside) {
+                    const dx = p.x - mouseX;
+                    const dy = p.y - mouseY;
+                    const dist = Math.hypot(dx, dy);
+                    if(dist < MOUSE_RADIUS && dist > 0.5) {
+                        const force = (1 - dist / MOUSE_RADIUS) * REPULSION_FORCE;
+                        const angle = Math.atan2(dy, dx);
+                        const fx = Math.cos(angle) * force;
+                        const fy = Math.sin(angle) * force;
+                        p.vx += fx * dt * 8;
+                        p.vy += fy * dt * 8;
+                    }
+                } 
+                else {
+                    // ---- REASSEMBLY + IDLE FLOATING (gentle spring to original + idle drift) ----
+                    // compute idle offset: subtle wavy motion using sin/cos per particle
+                    const speed = 0.0018;
+                    const ampX = 1.1;
+                    const ampY = 0.9;
+                    const idlex = Math.sin(globalTime * speed + p.seed) * ampX;
+                    const idley = Math.cos(globalTime * speed * 0.83 + p.seed * 1.3) * ampY;
+                    const targetX = p.origX + idlex;
+                    const targetY = p.origY + idley;
+                    
+                    // spring force toward target (smooth reassembly & idle dance)
+                    const springX = (targetX - p.x) * SPRING_STRENGTH;
+                    const springY = (targetY - p.y) * SPRING_STRENGTH;
+                    p.vx += springX * dt * 20;
+                    p.vy += springY * dt * 20;
+                    
+                    // subtle damping to avoid chaotic motion
+                    p.vx *= (1 - DAMPING * 0.2);
+                    p.vy *= (1 - DAMPING * 0.2);
+                }
+                
+                // apply damping (global)
+                p.vx *= DAMPING;
+                p.vy *= DAMPING;
+                
+                // speed limit
+                let spd = Math.hypot(p.vx, p.vy);
+                if(spd > MAX_SPEED) {
+                    p.vx = (p.vx / spd) * MAX_SPEED;
+                    p.vy = (p.vy / spd) * MAX_SPEED;
+                }
+                
+                // Euler integration
+                p.x += p.vx * dt * 18;
+                p.y += p.vy * dt * 18;
+                
+                // soft boundaries: avoid particles escaping too far (keep near canvas)
+                p.x = Math.min(Math.max(p.x, -30), canvas.width + 30);
+                p.y = Math.min(Math.max(p.y, -30), canvas.height + 30);
+            }
+        }
+        
+        // drawing routine: glowing particles with reveal (writing phase)
+        function drawParticles() {
+            if(!ctx) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // dynamic deep gradient background (dark with subtle movement)
+            const grad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+            grad.addColorStop(0, '#03050b');
+            grad.addColorStop(0.5, '#0a0f1c');
+            grad.addColorStop(1, '#020617');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // glow effect setup
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = "rgba(0, 210, 255, 0.7)";
+            
+            // determine current reveal threshold for writing animation
+            let currentRevealX = Infinity;
+            if(writingActive && particles.length > 0) {
+                const range = revealMaxX - revealMinX;
+                const progressValue = Math.min(1, writingProgress);
+                currentRevealX = revealMinX + range * progressValue;
+            }
+            
+            for(let p of particles) {
+                // if writing active, only draw particles to the left of reveal line (progressive appearance)
+                if(writingActive) {
+                    if(p.origX > currentRevealX) continue;
+                }
+                
+                // slight opacity flicker for magic
+                const opacity = 0.92 + Math.sin(globalTime * 0.008 + p.seed) * 0.08;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size * 0.9, 0, Math.PI * 2);
+                ctx.fillStyle = p.color;
+                ctx.shadowBlur = 7;
+                ctx.shadowColor = `rgba(0, 200, 255, 0.8)`;
+                ctx.fill();
+                
+                // inner brighter core
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size * 0.45, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(255, 255, 255, 0.8)`;
+                ctx.fill();
+            }
+            // reset shadow to avoid overglow
+            ctx.shadowBlur = 0;
+            
+            // extra subtle trailing effect: optional small particle trail? Not needed but adds flair: small faded dots? maybe not required but clean
+        }
+        
+        // writing progress updater based on time
+        let lastWriteTimestamp = 0;
+        function updateWritingProgress(nowMs) {
+            if(!writingActive) return;
+            if(writingProgress < 1.0) {
+                // increase progress based on delta time
+                let deltaWrite = 0;
+                if(lastWriteTimestamp !== 0) {
+                    deltaWrite = Math.min(30, nowMs - lastWriteTimestamp);
+                    writingProgress += deltaWrite * writingSpeed;
+                }
+                if(writingProgress >= 1.0) {
+                    writingProgress = 1.0;
+                    writingActive = false;   // writing complete -> enable interaction & idle floating
+                    // small reset of particle velocities after writing
+                    for(let p of particles) {
+                        p.vx *= 0.5;
+                        p.vy *= 0.5;
+                    }
+                }
+            }
+            lastWriteTimestamp = nowMs;
+        }
+        
+        // ---- animation loop with delta time ----
+        let previousTime = 0;
+        function animate(currentTime) {
+            if(!canvas.isConnected) return;
+            requestAnimationFrame(animate);
+            
+            // delta time (ms) for physics consistency
+            let delta = Math.min(0.033, (currentTime - previousTime) / 1000);
+            if(previousTime === 0) delta = 0.016;
+            previousTime = currentTime;
+            
+            // update writing progress (independent)
+            updateWritingProgress(currentTime);
+            
+            // update particle physics (forces, reassembly, idle)
+            updateParticles(delta, currentTime);
+            
+            // draw everything
+            drawParticles();
+        }
+        
+        // ----- handle mouse events -----
+        function onMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            let canvasX = (e.clientX - rect.left) * scaleX;
+            let canvasY = (e.clientY - rect.top) * scaleY;
+            canvasX = Math.min(Math.max(canvasX, 0), canvas.width);
+            canvasY = Math.min(Math.max(canvasY, 0), canvas.height);
+            mouseX = canvasX;
+            mouseY = canvasY;
+            hoverActive = true;
+        }
+        
+        function onMouseLeave() {
+            hoverActive = false;
+            mouseX = -2000;
+            mouseY = -2000;
+        }
+        
+        function onMouseEnter(e) {
+            hoverActive = true;
+            // update position immediately
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            let canvasX = (e.clientX - rect.left) * scaleX;
+            let canvasY = (e.clientY - rect.top) * scaleY;
+            mouseX = Math.min(Math.max(canvasX, 0), canvas.width);
+            mouseY = Math.min(Math.max(canvasY, 0), canvas.height);
+        }
+        
+        // regenerate everything after text change & reset animation
+        function updateTextAndReset() {
+            const newText = document.getElementById('textInput').value.trim();
+            if(newText === "") return;
+            currentText = newText;
+            // reset writing state before regeneration
+            writingActive = true;
+            writingProgress = 0;
+            hoverActive = false;
+            generateParticlesFromText(currentText);
+            lastWriteTimestamp = 0;
+            previousTime = 0;
+            // small delay to sync time
+        }
+        
+        // ---- resize observer / listener ----
+        window.addEventListener('resize', () => {
+            resizeCanvas();
+            // regenerate particles to maintain perfect alignment
+            generateParticlesFromText(currentText);
+            // force re-trigger writing
+            writingActive = true;
+            writingProgress = 0;
+            lastWriteTimestamp = 0;
+            previousTime = 0;
+        });
+        
+        // ---- initialization ----
+        function init() {
+            ctx = canvas.getContext('2d');
+            resizeCanvas();
+            generateParticlesFromText("NEON");
+            
+            // add event listeners
+            canvas.addEventListener('mousemove', onMouseMove);
+            canvas.addEventListener('mouseleave', onMouseLeave);
+            canvas.addEventListener('mouseenter', onMouseEnter);
+            
+            const updateBtn = document.getElementById('updateBtn');
+            updateBtn.addEventListener('click', () => {
+                updateTextAndReset();
+            });
+            const textInput = document.getElementById('textInput');
+            textInput.addEventListener('keypress', (e) => {
+                if(e.key === 'Enter') updateTextAndReset();
+            });
+            
+            // start animation
+            previousTime = 0;
+            animationId = requestAnimationFrame(animate);
+        }
+        
+        // start everything
+        init();
+    })();
+</script>
+</body>
+</html>
